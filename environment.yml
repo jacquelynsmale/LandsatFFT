@@ -1,0 +1,23 @@
+name: fft
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>3.7
+  - rasterio
+  - richdem
+  - pysheds
+  - tqdm
+  - ca-certificates
+  - certifi
+  - openssl
+  - contextily
+  - rasterstats
+  - scikit-image
+  - scikit-learn
+  - geopandas
+  - jupyterlab
+  - ipympl
+  - statsmodels
+  - patsy
+  - openpyxl
