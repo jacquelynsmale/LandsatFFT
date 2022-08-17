@@ -21,3 +21,4 @@ dependencies:
   - statsmodels
   - patsy
   - openpyxl
+  - cv2
