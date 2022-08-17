@@ -5,6 +5,22 @@ import scipy.ndimage as nd
 from osgeo import gdal
 from scipy.spatial.distance import pdist
 from skimage.measure import regionprops_table
+import cv2
+
+
+
+
+def load_geotiff(infile, band=1):
+    ds = gdal.Open(infile, gdal.GA_ReadOnly)
+
+    data = ds.GetRasterBand(band).ReadAsArray()
+    nodata = ds.GetRasterBand(band).GetNoDataValue()
+    mask = data == nodata
+    data = np.ma.array(data, mask=mask, fill_value=-9999)
+    projection = ds.GetProjection()
+    transform = ds.GetGeoTransform()
+    ds = None
+    return data, transform, projection
 
 
 def write_geotiff(outfile, data, transform, projection, nodata):
@@ -23,19 +39,6 @@ def write_geotiff(outfile, data, transform, projection, nodata):
     ds.GetRasterBand(1).WriteArray(data)
     data_set = None
     return outfile
-
-
-def load_geotiff(infile, band=1):
-    ds = gdal.Open(infile, gdal.GA_ReadOnly)
-
-    data = ds.GetRasterBand(band).ReadAsArray()
-    nodata = ds.GetRasterBand(band).GetNoDataValue()
-    mask = data == nodata
-    data = np.ma.array(data, mask=mask, fill_value=-9999)
-    projection = ds.GetProjection()
-    transform = ds.GetGeoTransform()
-    ds = None
-    return data, transform, projection
 
 
 def calculate_slope(point1, point2):
@@ -67,6 +70,17 @@ def find_centroid(arr):
     return centroid_m, centroid_n
 
 
+def wallis_filter(Ix, filter_width):
+    kernel = np.ones((filter_width, filter_width), dtype=np.float32)
+    n = np.sum(kernel)
+    m = cv2.filter2D(Ix, -1, kernel, borderType=cv2.BORDER_CONSTANT) / n
+
+    m2 = cv2.filter2D(Ix**2, -1, kernel, borderType=cv2.BORDER_CONSTANT) / n
+    std = np.sqrt(m2 - (m**2)) * np.sqrt(n / (n - 1))
+    filtered = (Ix - m) / std
+    return filtered
+
+
 def fft_filter(Ix, valid_domain):
     m, n = valid_domain.shape
 
@@ -90,9 +104,9 @@ def fft_filter(Ix, valid_domain):
 
     if any(sep < center_m):
         alternate_regions = {'top_left': (0, round(center_m / 2), 0, center_n),
-                   'top_right': (0, m, 0, round(center_m / 2)),
-                   'bottom_left': (round(center_m / 2 * 3), m, 0, n),
-                   'bottom_right': (0, m, round(center_n / 2 * 3), n)}
+                             'top_right': (0, m, 0, round(center_m / 2)),
+                             'bottom_left': (round(center_m / 2 * 3), m, 0, n),
+                             'bottom_right': (0, m, round(center_n / 2 * 3), n)}
         max_location = locate_max_in_subset(alternate_regions, dist_from_centroid)
         corners = [max_location['bottom_left'], max_location['bottom_right'], max_location['top_left'],
                    max_location['top_right']]
@@ -151,18 +165,15 @@ def main():
     image_dir = './scenes/'
 
     Ix, transform, projection = load_geotiff(image_dir + 'LT05_L2SP_062018_20091012_20200825_02_T1_SR_B2.TIF')
-    valid_domain = ~Ix.mask
 
-    #Unsure about this~~~~#
-    Ix_mean = np.nanmean(Ix)
-    Ix_std = np.nanstd(Ix)
-    Ix = (Ix-Ix_mean) / Ix_std
-    Ix = np.array(Ix.filled(fill_value=0))
-    #~~~~~~~~~~~~~~~~~~~~#
+    valid_domain = np.array(~Ix.mask)
+    Ix = np.array(Ix.filled(fill_value=0.0)).astype(float)
 
-    filtered = fft_filter(Ix, valid_domain)
+    wallis = wallis_filter(Ix, filter_width=21)
+    wallis[~valid_domain] = 0
 
-    write_geotiff(image_dir + 'filtered.tif', filtered, transform, projection, nodata=0)
+    ls_fft = fft_filter(wallis, valid_domain)
+    write_geotiff(image_dir + 'fft.tif', ls_fft, transform, projection, nodata=0.0)
 
 
 if __name__ == '__main__':
