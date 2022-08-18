@@ -153,7 +153,7 @@ def fft_filter(Ix, valid_domain, power_threshold):
 
 
 def main():
-    image_dir = '/Users/jrsmale/projects/LandsatFFT/scenes/'
+    image_dir = './scenes/'
 
     Ix, transform, projection = load_geotiff(image_dir + 'LT05_L2SP_018013_20090330_20200827_02_T1_SR_B2.TIF')
 
@@ -164,7 +164,7 @@ def main():
     wallis[~valid_domain] = 0
 
     ls_fft = fft_filter(wallis, valid_domain, power_threshold=500)
-    write_geotiff(image_dir + 'fft_final2.tif', ls_fft, transform, projection, nodata=0.0)
+    write_geotiff(image_dir + 'filtered_image.tif', ls_fft, transform, projection, nodata=0.0)
 
 
 if __name__ == '__main__':
