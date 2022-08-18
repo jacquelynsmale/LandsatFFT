@@ -41,7 +41,7 @@ def write_geotiff(outfile, data, transform, projection, nodata):
 
 
 def calculate_slope(point1, point2):
-    slope = np.arctan((point1[0] - point2[0]) / (point1[1] - point2[1]))
+    slope = np.arctan((point1[1] - point2[1]) / (point1[0] - point2[0]))
     return slope
 
 
@@ -69,24 +69,24 @@ def find_centroid(arr):
     return centroid_m, centroid_n
 
 
-def find_slopes(arr, distance_arr):
+def find_slopes(arr):
     labeled_img, num_labels = nd.label(arr)
     props = regionprops_table(labeled_img, properties=('area', 'bbox'))
 
     m_l = props['bbox-0'][0]
-    n_t = props['bbox-1'][0]
     m_r = props['bbox-2'][0]
+    n_t = props['bbox-1'][0]
     n_b = props['bbox-3'][0]
 
-    n_l = np.argmax(distance_arr[m_l])
-    m_t = np.argmax(distance_arr[:, n_t])
-    n_r = np.argmax(distance_arr[m_r - 1])
-    m_b = np.argmax(distance_arr[:, n_b - 1])
+    n_l = np.argmax(labeled_img[m_l])
+    n_r = np.argmax(labeled_img[m_r - 1])
+    m_t = np.argmax(labeled_img[:, n_t])
+    m_b = np.argmax(labeled_img[:, n_b - 1])
 
-    slope1 = calculate_slope([n_r, m_r], [n_b, m_b])
-    slope2 = calculate_slope([n_l, m_l], [n_t, m_t])
-    slope3 = calculate_slope([n_t, m_t], [n_r, m_r])
-    slope4 = calculate_slope([n_b, m_b], [n_l, m_l])
+    slope1 = calculate_slope([m_r, n_r], [m_b, n_b])
+    slope2 = calculate_slope([m_l, n_l], [m_t, n_t])
+    slope3 = calculate_slope([m_t, n_t], [m_r, n_r])
+    slope4 = calculate_slope([m_b, n_b], [m_l, n_l])
 
     return slope1, slope2, slope3, slope4
 
@@ -102,19 +102,14 @@ def wallis_filter(Ix, filter_width):
     return filtered
 
 
-def fft_filter(Ix, valid_domain):
+def fft_filter(Ix, valid_domain, power_threshold):
     m, n = valid_domain.shape
 
     center_m = int(np.floor(m / 2))
     center_n = int(np.floor(n / 2))
 
     centroid_m, centroid_n = find_centroid(valid_domain)
-    true_array = np.full((m, n), True)
-    true_array[centroid_m, center_n] = False
-    dist_from_centroid = nd.distance_transform_edt(true_array)
-    dist_from_centroid[~(valid_domain > 0)] = 0
-
-    slope1, slope2, slope3, slope4 = find_slopes(valid_domain, dist_from_centroid)
+    slope1, slope2, slope3, slope4 = find_slopes(valid_domain)
 
     filter_base = np.full((m, n), False)
     filter_base[center_m - 70:center_m + 70, :] = 1
@@ -123,9 +118,9 @@ def fft_filter(Ix, valid_domain):
     filter_a = nd.rotate(filter_base, np.rad2deg(np.nanmax([slope1, slope2])), reshape=False)
     filter_b = nd.rotate(filter_base, np.rad2deg(np.nanmax([slope3, slope4])), reshape=False)
 
-    ctr_shift = [centroid_n - center_n, centroid_m - center_m]
+    ctr_shift = [centroid_m - center_m, centroid_n - center_n]
 
-    translate_matrix = np.array([(1, 0, ctr_shift[1]), (0, 1, ctr_shift[0]), (0, 0, 1)])
+    translate_matrix = np.array([(1, 0, ctr_shift[0]), (0, 1, ctr_shift[1]), (0, 0, 1)])
     filter_a = nd.affine_transform(filter_a, matrix=translate_matrix)
     filter_b = nd.affine_transform(filter_b, matrix=translate_matrix)
 
@@ -143,7 +138,7 @@ def fft_filter(Ix, valid_domain):
     sA = np.nansum(P[filter_a == 1])
     sB = np.nansum(P[filter_b == 1])
 
-    if ((sA / sB >= 2) | (sB / sA >= 2)) & ((sA > 500) | (sB > 500)):
+    if ((sA / sB >= 2) | (sB / sA >= 2)) & ((sA > power_threshold) | (sB > power_threshold)):
         if sA > sB:
             final_filter = filter_a.copy()
         elif sB > sA:
@@ -168,8 +163,8 @@ def main():
     wallis = wallis_filter(Ix, filter_width=21)
     wallis[~valid_domain] = 0
 
-    ls_fft = fft_filter(wallis, valid_domain)
-    write_geotiff(image_dir + 'fft.tif', ls_fft, transform, projection, nodata=0.0)
+    ls_fft = fft_filter(wallis, valid_domain, power_threshold=500)
+    write_geotiff(image_dir + 'fft_final2.tif', ls_fft, transform, projection, nodata=0.0)
 
 
 if __name__ == '__main__':
