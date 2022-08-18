@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import numpy.fft as fft
 import pandas as pd
@@ -6,8 +7,6 @@ from osgeo import gdal
 from scipy.spatial.distance import pdist
 from skimage.measure import regionprops_table
 import cv2
-
-
 
 
 def load_geotiff(infile, band=1):
@@ -70,13 +69,35 @@ def find_centroid(arr):
     return centroid_m, centroid_n
 
 
+def find_slopes(arr, distance_arr):
+    labeled_img, num_labels = nd.label(arr)
+    props = regionprops_table(labeled_img, properties=('area', 'bbox'))
+
+    m_l = props['bbox-0'][0]
+    n_t = props['bbox-1'][0]
+    m_r = props['bbox-2'][0]
+    n_b = props['bbox-3'][0]
+
+    n_l = np.argmax(distance_arr[m_l])
+    m_t = np.argmax(distance_arr[:, n_t])
+    n_r = np.argmax(distance_arr[m_r - 1])
+    m_b = np.argmax(distance_arr[:, n_b - 1])
+
+    slope1 = calculate_slope([n_r, m_r], [n_b, m_b])
+    slope2 = calculate_slope([n_l, m_l], [n_t, m_t])
+    slope3 = calculate_slope([n_t, m_t], [n_r, m_r])
+    slope4 = calculate_slope([n_b, m_b], [n_l, m_l])
+
+    return slope1, slope2, slope3, slope4
+
+
 def wallis_filter(Ix, filter_width):
     kernel = np.ones((filter_width, filter_width), dtype=np.float32)
     n = np.sum(kernel)
     m = cv2.filter2D(Ix, -1, kernel, borderType=cv2.BORDER_CONSTANT) / n
 
-    m2 = cv2.filter2D(Ix**2, -1, kernel, borderType=cv2.BORDER_CONSTANT) / n
-    std = np.sqrt(m2 - (m**2)) * np.sqrt(n / (n - 1))
+    m2 = cv2.filter2D(Ix ** 2, -1, kernel, borderType=cv2.BORDER_CONSTANT) / n
+    std = np.sqrt(m2 - (m ** 2)) * np.sqrt(n / (n - 1))
     filtered = (Ix - m) / std
     return filtered
 
@@ -93,44 +114,20 @@ def fft_filter(Ix, valid_domain):
     dist_from_centroid = nd.distance_transform_edt(true_array)
     dist_from_centroid[~(valid_domain > 0)] = 0
 
-    regions = {'top_left': (0, center_m, 0, center_n),
-               'top_right': (0, center_m, center_n + 1, n),
-               'bottom_left': (center_m + 1, m, 0, center_n),
-               'bottom_right': (center_m + 1, m, center_n + 1, n)}
-    max_location = locate_max_in_subset(regions, dist_from_centroid)
-    corners = [max_location['bottom_left'], max_location['bottom_right'], max_location['top_left'],
-               max_location['top_right']]
-    sep = pdist(corners, 'euclidean')
+    slope1, slope2, slope3, slope4 = find_slopes(valid_domain, dist_from_centroid)
 
-    if any(sep < center_m):
-        alternate_regions = {'top_left': (0, round(center_m / 2), 0, center_n),
-                             'top_right': (0, m, 0, round(center_m / 2)),
-                             'bottom_left': (round(center_m / 2 * 3), m, 0, n),
-                             'bottom_right': (0, m, round(center_n / 2 * 3), n)}
-        max_location = locate_max_in_subset(alternate_regions, dist_from_centroid)
-        corners = [max_location['bottom_left'], max_location['bottom_right'], max_location['top_left'],
-                   max_location['top_right']]
-        sep = pdist(corners, 'euclidean')
-
-        if any(sep < center_m):
-            raise ValueError('two or more recovered image corner locations are too close to eachother'
-                             '\n add to cleanLandsatDataDir corruptImages list then run cleanLandsatDataDir')
-
-    slope1 = calculate_slope(max_location['bottom_left'], max_location['bottom_right'])
-    slope2 = calculate_slope(max_location['top_left'], max_location['top_right'])
-    slope3 = calculate_slope(max_location['bottom_left'], max_location['top_left'])
-    slope4 = calculate_slope(max_location['top_right'], max_location['bottom_right'])
-
-    filter_base = np.zeros((m, n))
+    filter_base = np.full((m, n), False)
     filter_base[center_m - 70:center_m + 70, :] = 1
     filter_base[:, center_n - 100:center_n + 100] = 0
+
     filter_a = nd.rotate(filter_base, np.rad2deg(np.nanmax([slope1, slope2])), reshape=False)
     filter_b = nd.rotate(filter_base, np.rad2deg(np.nanmax([slope3, slope4])), reshape=False)
 
-    ctr_shift = (centroid_m - center_m, centroid_n - center_n)
-    translation_matrix = np.array([(1, 0, ctr_shift[0]), (0, 1, ctr_shift[1]), (0, 0, 1)])
-    filter_a = nd.affine_transform(filter_a, matrix=translation_matrix)
-    filter_b = nd.affine_transform(filter_b, matrix=translation_matrix)
+    ctr_shift = [centroid_n - center_n, centroid_m - center_m]
+
+    translate_matrix = np.array([(1, 0, ctr_shift[1]), (0, 1, ctr_shift[0]), (0, 0, 1)])
+    filter_a = nd.affine_transform(filter_a, matrix=translate_matrix)
+    filter_b = nd.affine_transform(filter_b, matrix=translate_matrix)
 
     image = Ix.copy()
     image[image > 3] = 3
@@ -146,8 +143,7 @@ def fft_filter(Ix, valid_domain):
     sA = np.nansum(P[filter_a == 1])
     sB = np.nansum(P[filter_b == 1])
 
-    # if ((sA/sB >= 2) | (sB/sA >= 2)) & ((sA > 500) | (sB > 500)):
-    if True:
+    if ((sA / sB >= 2) | (sB / sA >= 2)) & ((sA > 500) | (sB > 500)):
         if sA > sB:
             final_filter = filter_a.copy()
         elif sB > sA:
@@ -156,15 +152,15 @@ def fft_filter(Ix, valid_domain):
         filtered_image = np.real(fft.ifft2(fft.ifftshift(fft_image * (1 - (final_filter)))))
         filtered_image[~valid_domain] = 0
     else:
-        raise ValueError('Invalid Result')
+        print('Power along flight direction does not exceed banding threshold. No banding filter applied.')
 
     return filtered_image
 
 
 def main():
-    image_dir = './scenes/'
+    image_dir = '/Users/jrsmale/projects/LandsatFFT/scenes/'
 
-    Ix, transform, projection = load_geotiff(image_dir + 'LT05_L2SP_062018_20091012_20200825_02_T1_SR_B2.TIF')
+    Ix, transform, projection = load_geotiff(image_dir + 'LT05_L2SP_018013_20090330_20200827_02_T1_SR_B2.TIF')
 
     valid_domain = np.array(~Ix.mask)
     Ix = np.array(Ix.filled(fill_value=0.0)).astype(float)
