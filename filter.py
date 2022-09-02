@@ -103,8 +103,8 @@ def fft_filter(Ix, valid_domain, power_threshold):
     filter_base[center_m - 70:center_m + 70, :] = 1
     filter_base[:, center_n - 100:center_n + 100] = 0
 
-    filter_a = nd.rotate(filter_base, angle, reshape=False)
-    filter_b = nd.rotate(filter_base, angle + 90, reshape=False)
+    filter_a = nd.rotate(filter_base, -angle, reshape=False)
+    filter_b = nd.rotate(filter_base, 90 - angle, reshape=False)
 
     ctr_shift = [centroid_m - center_m, centroid_n - center_n]
 
@@ -125,7 +125,6 @@ def fft_filter(Ix, valid_domain, power_threshold):
 
     sA = np.nansum(P[filter_a == 1])
     sB = np.nansum(P[filter_b == 1])
-    print(sA, sB)
     if ((sA / sB >= 2) | (sB / sA >= 2)) & ((sA > power_threshold) | (sB > power_threshold)):
         if sA > sB:
             final_filter = filter_a.copy()
@@ -152,7 +151,7 @@ def main():
     wallis = wallis_filter(Ix, filter_width=21)
     wallis[~valid_domain] = 0
 
-    ls_fft = fft_filter(wallis, valid_domain, power_threshold=1)#500)
+    ls_fft = fft_filter(wallis, valid_domain, power_threshold=500)
     write_geotiff(image_dir + 'filtered_image.tif', ls_fft, transform, projection, nodata=0.0)
 
 
