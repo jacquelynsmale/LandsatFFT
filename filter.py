@@ -1,11 +1,14 @@
-import logging
+import cv2
+import sys
+import numpy as np
+from scipy.ndimage import distance_transform_edt
+
 import numpy as np
 import numpy.fft as fft
-import pandas as pd
+# import pandas as pd
 import scipy.ndimage as nd
 from osgeo import gdal
-from scipy.spatial.distance import pdist
-from skimage.measure import regionprops_table
+# from skimage.measure import regionprops_table
 import cv2
 
 
@@ -59,36 +62,14 @@ def locate_max_in_subset(regions_params, distance_arr):
     return max_location
 
 
-def find_centroid(arr):
-    labeled_img, num_labels = nd.label(arr)
-    props = regionprops_table(labeled_img, properties=('centroid', 'area'))
-    props = pd.DataFrame(props)
-    main_centroid = props.loc[props['area'] == props['area'].max(), ['centroid-0', 'centroid-1']]
-    centroid_m = int(np.floor(main_centroid['centroid-0']))
-    centroid_n = int(np.floor(main_centroid['centroid-1']))
-    return centroid_m, centroid_n
-
-
-def find_slopes(arr):
-    labeled_img, num_labels = nd.label(arr)
-    props = regionprops_table(labeled_img, properties=('area', 'bbox'))
-
-    m_l = props['bbox-0'][0]
-    m_r = props['bbox-2'][0]
-    n_t = props['bbox-1'][0]
-    n_b = props['bbox-3'][0]
-
-    n_l = np.argmax(labeled_img[m_l])
-    n_r = np.argmax(labeled_img[m_r - 1])
-    m_t = np.argmax(labeled_img[:, n_t])
-    m_b = np.argmax(labeled_img[:, n_b - 1])
-
-    slope1 = calculate_slope([m_r, n_r], [m_b, n_b])
-    slope2 = calculate_slope([m_l, n_l], [m_t, n_t])
-    slope3 = calculate_slope([m_t, n_t], [m_r, n_r])
-    slope4 = calculate_slope([m_b, n_b], [m_l, n_l])
-
-    return slope1, slope2, slope3, slope4
+def find_largest_region(arr):
+    binary_arr = np.zeros(arr.shape)
+    binary_arr[arr != 0] = 1
+    label_arr, nb_labels = nd.label(binary_arr)
+    sizes = nd.sum(binary_arr, label_arr, range(nb_labels + 1))
+    max_label = sizes.argmax()
+    label_arr[label_arr != max_label] = 0
+    return label_arr
 
 
 def wallis_filter(Ix, filter_width):
@@ -104,19 +85,26 @@ def wallis_filter(Ix, filter_width):
 
 def fft_filter(Ix, valid_domain, power_threshold):
     m, n = valid_domain.shape
-
     center_m = int(np.floor(m / 2))
     center_n = int(np.floor(n / 2))
 
-    centroid_m, centroid_n = find_centroid(valid_domain)
-    slope1, slope2, slope3, slope4 = find_slopes(valid_domain)
+    thresh = find_largest_region(Ix)
+    thresh = np.uint8(thresh * 255)
+    contours, hierarchy = cv2.findContours(thresh, 1, 2)
+    contour = contours[0]
+    moment = cv2.moments(contour)
+
+    centroid_m = int(np.floor(moment['m01'] / moment['m00']))
+    centroid_n = int(np.floor(moment['m10'] / moment['m00']))
+    rectangle = cv2.minAreaRect(contour)
+    angle = rectangle[2]
 
     filter_base = np.full((m, n), False)
     filter_base[center_m - 70:center_m + 70, :] = 1
     filter_base[:, center_n - 100:center_n + 100] = 0
 
-    filter_a = nd.rotate(filter_base, np.rad2deg(np.nanmax([slope1, slope2])), reshape=False)
-    filter_b = nd.rotate(filter_base, np.rad2deg(np.nanmax([slope3, slope4])), reshape=False)
+    filter_a = nd.rotate(filter_base, angle, reshape=False)
+    filter_b = nd.rotate(filter_base, angle + 90, reshape=False)
 
     ctr_shift = [centroid_m - center_m, centroid_n - center_n]
 
@@ -137,7 +125,7 @@ def fft_filter(Ix, valid_domain, power_threshold):
 
     sA = np.nansum(P[filter_a == 1])
     sB = np.nansum(P[filter_b == 1])
-
+    print(sA, sB)
     if ((sA / sB >= 2) | (sB / sA >= 2)) & ((sA > power_threshold) | (sB > power_threshold)):
         if sA > sB:
             final_filter = filter_a.copy()
@@ -148,6 +136,7 @@ def fft_filter(Ix, valid_domain, power_threshold):
         filtered_image[~valid_domain] = 0
     else:
         print('Power along flight direction does not exceed banding threshold. No banding filter applied.')
+        return image
 
     return filtered_image
 
@@ -163,7 +152,7 @@ def main():
     wallis = wallis_filter(Ix, filter_width=21)
     wallis[~valid_domain] = 0
 
-    ls_fft = fft_filter(wallis, valid_domain, power_threshold=500)
+    ls_fft = fft_filter(wallis, valid_domain, power_threshold=1)#500)
     write_geotiff(image_dir + 'filtered_image.tif', ls_fft, transform, projection, nodata=0.0)
 
 
