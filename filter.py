@@ -1,15 +1,8 @@
 import cv2
-import sys
-import numpy as np
-from scipy.ndimage import distance_transform_edt
-
 import numpy as np
 import numpy.fft as fft
-# import pandas as pd
 import scipy.ndimage as nd
 from osgeo import gdal
-# from skimage.measure import regionprops_table
-import cv2
 
 
 def load_geotiff(infile, band=1):
