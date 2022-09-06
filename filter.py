@@ -71,7 +71,9 @@ def fft_filter(Ix, valid_domain, power_threshold):
 
     single_region = find_largest_region(Ix)
     single_region = np.uint8(single_region * 255)
-    contours, hierarchy = cv2.findContours(single_region, 1, 2)
+    contours, hierarchy = cv2.findContours(single_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy.shape[1] > 1:
+        raise ValueError(f'{hierarchy.shape[1]} external objects founds, only expecting 1.')
     contour = contours[0]
     moment = cv2.moments(contour)
 
@@ -131,15 +133,11 @@ def main():
     valid_domain = np.array(~Ix.mask)
     Ix = np.array(Ix.filled(fill_value=0.0)).astype(float)
 
-    # wallis = wallis_filter(Ix, filter_width=5)
-    # wallis[~valid_domain] = 0
-    # write_geotiff(image_dir + 'wallis_image.tif', wallis, transform, projection, nodata=0.0)
-
-    wallis, _, _ = load_geotiff(image_dir + 'wallis_image.tif')
-    wallis = wallis.filled(fill_value=0.0)
+    wallis = wallis_filter(Ix, filter_width=5)
     wallis[~valid_domain] = 0
+    write_geotiff(image_dir + 'wallis_image.tif', wallis, transform, projection, nodata=0.0)
 
-    ls_fft = fft_filter(wallis, valid_domain, power_threshold=10)  # original power thresh is 500
+    ls_fft = fft_filter(wallis, valid_domain, power_threshold=500)
     write_geotiff(image_dir + 'filtered_image.tif', ls_fft, transform, projection, nodata=0.0)
 
 
