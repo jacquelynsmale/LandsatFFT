@@ -43,25 +43,6 @@ def write_geotiff(outfile, data, transform, projection, nodata):
     return outfile
 
 
-def calculate_slope(point1, point2):
-    slope = np.arctan((point1[1] - point2[1]) / (point1[0] - point2[0]))
-    return slope
-
-
-def locate_max_in_subset(regions_params, distance_arr):
-    max_location = {}
-    for name, bounds in regions_params.items():
-        m_min, m_max, n_min, n_max = bounds
-        subset = distance_arr[m_min:m_max, n_min:n_max].copy()
-        indices = np.where(np.max(subset) == subset)
-        m, n = (indices[0][0], indices[1][0])
-        m += m_min
-        n += n_min
-        max_location[name] = (m, n)
-
-    return max_location
-
-
 def find_largest_region(arr):
     binary_arr = np.zeros(arr.shape)
     binary_arr[arr != 0] = 1
@@ -88,9 +69,9 @@ def fft_filter(Ix, valid_domain, power_threshold):
     center_m = int(np.floor(m / 2))
     center_n = int(np.floor(n / 2))
 
-    thresh = find_largest_region(Ix)
-    thresh = np.uint8(thresh * 255)
-    contours, hierarchy = cv2.findContours(thresh, 1, 2)
+    single_region = find_largest_region(Ix)
+    single_region = np.uint8(single_region * 255)
+    contours, hierarchy = cv2.findContours(single_region, 1, 2)
     contour = contours[0]
     moment = cv2.moments(contour)
 
@@ -125,6 +106,7 @@ def fft_filter(Ix, valid_domain, power_threshold):
 
     sA = np.nansum(P[filter_a == 1])
     sB = np.nansum(P[filter_b == 1])
+    print(sA, sB)
     if ((sA / sB >= 2) | (sB / sA >= 2)) & ((sA > power_threshold) | (sB > power_threshold)):
         if sA > sB:
             final_filter = filter_a.copy()
@@ -134,7 +116,8 @@ def fft_filter(Ix, valid_domain, power_threshold):
         filtered_image = np.real(fft.ifft2(fft.ifftshift(fft_image * (1 - (final_filter)))))
         filtered_image[~valid_domain] = 0
     else:
-        print('Power along flight direction does not exceed banding threshold. No banding filter applied.')
+        print(f'Power along flight direction ({max(sB, sA)}) does not exceed banding threshold ({power_threshold}). '
+              f'No banding filter applied.')
         return image
 
     return filtered_image
@@ -143,15 +126,20 @@ def fft_filter(Ix, valid_domain, power_threshold):
 def main():
     image_dir = './scenes/'
 
-    Ix, transform, projection = load_geotiff(image_dir + 'LT05_L2SP_018013_20090330_20200827_02_T1_SR_B2.TIF')
+    Ix, transform, projection = load_geotiff(image_dir + 'LT05_L2SP_018013_20060610_20200901_02_T1_SR_B2.TIF')
 
     valid_domain = np.array(~Ix.mask)
     Ix = np.array(Ix.filled(fill_value=0.0)).astype(float)
 
-    wallis = wallis_filter(Ix, filter_width=21)
+    # wallis = wallis_filter(Ix, filter_width=5)
+    # wallis[~valid_domain] = 0
+    # write_geotiff(image_dir + 'wallis_image.tif', wallis, transform, projection, nodata=0.0)
+
+    wallis, _, _ = load_geotiff(image_dir + 'wallis_image.tif')
+    wallis = wallis.filled(fill_value=0.0)
     wallis[~valid_domain] = 0
 
-    ls_fft = fft_filter(wallis, valid_domain, power_threshold=500)
+    ls_fft = fft_filter(wallis, valid_domain, power_threshold=10)  # original power thresh is 500
     write_geotiff(image_dir + 'filtered_image.tif', ls_fft, transform, projection, nodata=0.0)
 
 
