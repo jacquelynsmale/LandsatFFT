@@ -6,9 +6,18 @@ import scipy.ndimage as nd
 
 @pytest.fixture(scope='module')
 def box():
-    arr = np.zeros((9, 9))
-    arr[3:6, 3:6] = 1
-    arr[8, 8] = 1
+    arr = np.zeros((7, 7))
+    arr[2:5, 2:5] = 1
+    arr[6, 6] = 1
+    return arr
+
+
+@pytest.fixture(scope='module')
+def box2():
+    arr = np.zeros((7, 7))
+    arr[2:5, 2:5] = 1
+    arr[0, 0] = 1
+    arr[6, 6] = 1
     return arr
 
 
@@ -35,19 +44,10 @@ def regions(box):
     return params
 
 
-def test_centroid(box):
-    result = filter.find_centroid(box)
-    assert result == (4, 4)
+def test_find_largest(box, box2):
+    result1 = filter.find_largest_region(box)
+    assert result1 == 1
 
+    result2 = filter.find_largest_region(box2)
+    assert result2 == 2
 
-def test_find_corners(regions, distance):
-    result = filter.locate_max_in_subset(regions, distance)
-    assert result['top_left'] == (3, 3)
-    assert result['top_right'] == (3, 5)
-    assert result['bottom_left'] == (5, 3)
-    assert result['bottom_right'] == (8, 8)
-
-
-def test_slope():
-    result = filter.calculate_slope((0, 0), (1, 1))
-    assert np.rad2deg(result) == 45
