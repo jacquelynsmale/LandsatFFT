@@ -4,18 +4,15 @@ import numpy.fft as fft
 import scipy.ndimage as nd
 from osgeo import gdal
 
-
 def load_geotiff(infile, band=1):
     ds = gdal.Open(infile, gdal.GA_ReadOnly)
 
     data = ds.GetRasterBand(band).ReadAsArray()
     nodata = ds.GetRasterBand(band).GetNoDataValue()
-    mask = data == nodata
-    data = np.ma.array(data, mask=mask, fill_value=-9999)
     projection = ds.GetProjection()
     transform = ds.GetGeoTransform()
     ds = None
-    return data, transform, projection
+    return data, transform, projection, nodata
 
 
 def write_geotiff(outfile, data, transform, projection, nodata):
@@ -59,8 +56,10 @@ def wallis_filter(Ix, filter_width):
 
 def fft_filter(Ix, valid_domain, power_threshold):
     m, n = valid_domain.shape
-    center_m = int(np.floor(m / 2))
-    center_n = int(np.floor(n / 2))
+    center_m = m / 2
+    center_m_int = np.floor(m / 2).astype(int)
+    center_n = n / 2
+    center_n_int = np.floor(n / 2).astype(int)
 
     single_region = find_largest_region(Ix)
     single_region = np.uint8(single_region * 255)
@@ -75,18 +74,22 @@ def fft_filter(Ix, valid_domain, power_threshold):
     rectangle = cv2.minAreaRect(contour)
     angle = rectangle[2]
 
-    filter_base = np.full((m, n), False)
-    filter_base[center_m - 70:center_m + 70, :] = 1
-    filter_base[:, center_n - 100:center_n + 100] = 0
+    filter_base = np.zeros((m, n))
+    filter_base[center_m_int - 70:center_m_int + 70, :] = 1
+    filter_base[:, center_n_int - 100:center_n_int + 100] = 0
 
-    filter_a = nd.rotate(filter_base, -angle, reshape=False)
-    filter_b = nd.rotate(filter_base, 90 - angle, reshape=False)
+    rotation_a = cv2.getRotationMatrix2D(center=(center_n, center_m), angle=angle, scale=1)
+    rotation_b = cv2.getRotationMatrix2D(center=(center_n, center_m), angle=90 - angle, scale=1)
+    filter_a = cv2.warpAffine(src=filter_base, M=rotation_a, dsize=(n, m))
+    filter_b = cv2.warpAffine(src=filter_base, M=rotation_b, dsize=(n, m))
 
-    ctr_shift = [centroid_m - center_m, centroid_n - center_n]
-
-    translate_matrix = np.array([(1, 0, ctr_shift[0]), (0, 1, ctr_shift[1]), (0, 0, 1)])
-    filter_a = nd.affine_transform(filter_a, matrix=translate_matrix)
-    filter_b = nd.affine_transform(filter_b, matrix=translate_matrix)
+    m_shift = centroid_m - center_m
+    n_shift = centroid_n - center_n
+    translation = np.array([[1, 0, n_shift],
+                            [0, 1, m_shift]],
+                           dtype=np.float32)
+    filter_a = cv2.warpAffine(src=filter_a, M=translation, dsize=(n, m)).astype(int)
+    filter_b = cv2.warpAffine(src=filter_b, M=translation, dsize=(n, m)).astype(int)
 
     image = Ix.copy()
     image[image > 3] = 3
@@ -121,16 +124,18 @@ def fft_filter(Ix, valid_domain, power_threshold):
 def main():
     image_dir = './scenes/'
 
-    Ix, transform, projection = load_geotiff(image_dir + 'LT05_L2SP_018013_20060610_20200901_02_T1_SR_B2.TIF')
+    Ix, transform, projection, nodata = load_geotiff(image_dir + 'LT05_L2SP_018013_20060610_20200901_02_T1_SR_B2.TIF')
 
-    valid_domain = np.array(~Ix.mask)
-    Ix = np.array(Ix.filled(fill_value=0.0)).astype(float)
+    valid_domain = np.array(Ix != nodata)
+    Ix[~valid_domain] = 0
+    Ix = Ix.astype(float)
 
     wallis = wallis_filter(Ix, filter_width=5)
     wallis[~valid_domain] = 0
     write_geotiff(image_dir + 'wallis_image.tif', wallis, transform, projection, nodata=0.0)
 
-    ls_fft = fft_filter(wallis, valid_domain, power_threshold=500)
+    ls_fft, filter_a, filter_b = fft_filter(wallis, valid_domain, power_threshold=500)
+    ls_fft[~valid_domain] = 0
     write_geotiff(image_dir + 'filtered_image.tif', ls_fft, transform, projection, nodata=0.0)
 
 
