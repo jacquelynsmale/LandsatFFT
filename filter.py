@@ -4,6 +4,7 @@ import numpy.fft as fft
 import scipy.ndimage as nd
 from osgeo import gdal
 
+
 def load_geotiff(infile, band=1):
     ds = gdal.Open(infile, gdal.GA_ReadOnly)
 
@@ -53,15 +54,41 @@ def wallis_filter(Ix, filter_width):
     filtered = (Ix - m) / std
     return filtered
 
+def get_slopes(rectangle):
+    box = cv2.boxPoints(rectangle)
+    x_diff = box[3, 0] - box[1, 0]
+    if x_diff < 0:
+        top_left, top_right, bottom_right, bottom_left = zip(box[:, 0], box[:, 1])
+    elif x_diff > 0:
+        bottom_left, top_left, top_right, bottom_right = zip(box[:, 0], box[:, 1])
+    else:
+        bottom_right, bottom_left, top_left, top_right = zip(box[:, 0], box[:, 1])
+
+    slope1 = calculate_slope(bottom_right, bottom_left)
+    slope2 = calculate_slope(top_right, top_left)
+    slope3 = calculate_slope(top_right, bottom_right)
+    slope4 = calculate_slope(top_left, bottom_left)
+    print(slope1, slope2, slope3, slope4)
+    along_track_angle = -1 * np.nanmax([slope3, slope4])
+    cross_track_angle = -1 * np.nanmax([slope1, slope2])
+    return along_track_angle, cross_track_angle
+
+
+def calculate_slope(point1, point2):
+    slope = np.rad2deg(np.arctan((point1[1] - point2[1]) / (point1[0] - point2[0])))
+    return slope
 
 def fft_filter(Ix, valid_domain, power_threshold):
-    m, n = valid_domain.shape
-    center_m = m / 2
-    center_m_int = np.floor(m / 2).astype(int)
-    center_n = n / 2
-    center_n_int = np.floor(n / 2).astype(int)
+    y, x = valid_domain.shape
+    center_y = y / 2
+    center_y_int = np.floor(y / 2).astype(int)
+    center_x = x / 2
+    center_x_int = np.floor(x / 2).astype(int)
 
-    single_region = find_largest_region(Ix)
+    regions = (Ix != 0).astype('uint8')
+    # element = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (33, 33))
+    # regions = cv2.dilate(regions, element)
+    single_region = find_largest_region(regions)
     single_region = np.uint8(single_region * 255)
     contours, hierarchy = cv2.findContours(single_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if hierarchy.shape[1] > 1:
@@ -69,27 +96,34 @@ def fft_filter(Ix, valid_domain, power_threshold):
     contour = contours[0]
     moment = cv2.moments(contour)
 
-    centroid_m = int(np.floor(moment['m01'] / moment['m00']))
-    centroid_n = int(np.floor(moment['m10'] / moment['m00']))
+    centroid_y = moment['m01'] / moment['m00']
+    centroid_x = moment['m10'] / moment['m00']
     rectangle = cv2.minAreaRect(contour)
-    angle = rectangle[2]
+    cross_track = -rectangle[2]
+    along_track = 90 + cross_track #-1.5 (this is how much we're off by in the test image)
+    print(f'Along track angle is {along_track:.2f} degrees')
 
-    filter_base = np.zeros((m, n))
-    filter_base[center_m_int - 70:center_m_int + 70, :] = 1
-    filter_base[:, center_n_int - 100:center_n_int + 100] = 0
+    alex_a = load_geotiff('scenes/LT05_L2SP_018013_20060610_20200901_02_T1_SR_B2_A.tif')[0].astype(int)
+    alex_b = load_geotiff('scenes/LT05_L2SP_018013_20060610_20200901_02_T1_SR_B2_B.tif')[0].astype(int)
 
-    rotation_a = cv2.getRotationMatrix2D(center=(center_n, center_m), angle=angle, scale=1)
-    rotation_b = cv2.getRotationMatrix2D(center=(center_n, center_m), angle=90 - angle, scale=1)
-    filter_a = cv2.warpAffine(src=filter_base, M=rotation_a, dsize=(n, m))
-    filter_b = cv2.warpAffine(src=filter_base, M=rotation_b, dsize=(n, m))
+    filter_base = np.zeros((y, x))
+    filter_base[center_y_int - 70:center_y_int + 70, :] = 1
+    filter_base[:, center_x_int - 100:center_x_int + 100] = 0
 
-    m_shift = centroid_m - center_m
-    n_shift = centroid_n - center_n
-    translation = np.array([[1, 0, n_shift],
-                            [0, 1, m_shift]],
-                           dtype=np.float32)
-    filter_a = cv2.warpAffine(src=filter_a, M=translation, dsize=(n, m)).astype(int)
-    filter_b = cv2.warpAffine(src=filter_b, M=translation, dsize=(n, m)).astype(int)
+    rotation_a = cv2.getRotationMatrix2D(center=(center_x, center_y), angle=cross_track, scale=1)
+    rotation_b = cv2.getRotationMatrix2D(center=(center_x, center_y), angle=along_track, scale=1)
+    filter_a = cv2.warpAffine(src=filter_base, M=rotation_a, dsize=(x, y))
+    filter_b = cv2.warpAffine(src=filter_base, M=rotation_b, dsize=(x, y))
+
+    y_shift = centroid_y - center_y
+    x_shift = centroid_x - center_x
+    print(f'shift = ({x_shift:.1f},{y_shift:.1f})')
+
+    # translation = np.array([[1, 0, x_shift],
+    #                         [0, 1, y_shift]],
+    #                        dtype=np.float32)
+    # filter_a = cv2.warpAffine(src=filter_a, M=translation, dsize=(x, y))
+    # filter_b = cv2.warpAffine(src=filter_b, M=translation, dsize=(x, y))
 
     image = Ix.copy()
     image[image > 3] = 3
@@ -125,7 +159,6 @@ def main():
     image_dir = './scenes/'
 
     Ix, transform, projection, nodata = load_geotiff(image_dir + 'LT05_L2SP_018013_20060610_20200901_02_T1_SR_B2.TIF')
-
     valid_domain = np.array(Ix != nodata)
     Ix[~valid_domain] = 0
     Ix = Ix.astype(float)
@@ -133,7 +166,6 @@ def main():
     wallis = wallis_filter(Ix, filter_width=5)
     wallis[~valid_domain] = 0
     write_geotiff(image_dir + 'wallis_image.tif', wallis, transform, projection, nodata=0.0)
-
     ls_fft, filter_a, filter_b = fft_filter(wallis, valid_domain, power_threshold=500)
     ls_fft[~valid_domain] = 0
     write_geotiff(image_dir + 'filtered_image.tif', ls_fft, transform, projection, nodata=0.0)
