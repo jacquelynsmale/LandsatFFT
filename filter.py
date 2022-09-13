@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import numpy.fft as fft
-import scipy.ndimage as nd
 from osgeo import gdal
 from scipy.spatial import distance as dist
 
@@ -47,9 +46,10 @@ def wallis_filter(Ix, filter_width):
 
 
 def find_largest_region(binary_arr):
-    n_labels, label_arr = cv2.connectedComponents(binary_arr)
-    sizes = nd.sum(binary_arr, label_arr, range(n_labels + 1))
-    max_label = sizes.argmax()
+    n_labels, label_arr, stats, centroids = cv2.connectedComponentsWithStats(binary_arr)
+    area = stats[:, cv2.CC_STAT_AREA]
+    max_label = area[1:].argmax() + 1
+    breakpoint()
     label_arr[label_arr != max_label] = 0
     return label_arr
 
